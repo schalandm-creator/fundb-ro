@@ -1,78 +1,104 @@
-
-# classify_simple.py
-# Sehr einfacher Code – Kleidung vorhersagen (Hose, Pullover, Jacken, Sonstiges)
-
-import numpy as np
+# app.py
+import streamlit as st
 from PIL import Image, ImageOps
+import numpy as np
 from tensorflow.keras.models import load_model
-import sys
+import io
 
-# ──── Einstellungen ────────────────────────────────────────
-MODEL_DATEI   = "keras_model.h5"
-LABELS_DATEI  = "labels.txt"
-BILD_GROESSE  = (224, 224)
+# ─── Konfiguration ────────────────────────────────────────────────
+MODEL_PATH   = "keras_Model.h5"
+LABELS_PATH  = "labels.txt"
+IMG_SIZE     = (224, 224)
+
+# ─── Labels laden ─────────────────────────────────────────────────
+@st.cache_data
+def lade_labels():
+    try:
+        with open(LABELS_PATH, "r", encoding="utf-8") as f:
+            zeilen = f.readlines()
+        klassen = []
+        for zeile in zeilen:
+            zeile = zeile.strip()
+            if zeile and not zeile.startswith("#"):
+                # "0 hose" → nur "hose"
+                if " " in zeile:
+                    klassen.append(zeile.split(" ", 1)[1].strip())
+                else:
+                    klassen.append(zeile)
+        return klassen
+    except Exception as e:
+        st.error(f"labels.txt konnte nicht geladen werden: {e}")
+        return ["hose", "pullover", "Jacken", "sonstiges"]  # Fallback
 
 
-def lade_klassen():
-    with open(LABELS_DATEI, "r", encoding="utf-8") as f:
-        zeilen = f.readlines()
-    klassen = []
-    for zeile in zeilen:
-        if zeile.strip():
-            # "0 hose" → nur "hose" behalten
-            teil = zeile.strip().split(" ", 1)
-            if len(teil) == 2:
-                klassen.append(teil[1])
-            else:
-                klassen.append(zeile.strip())
-    return klassen
+# ─── Modell laden (nur einmal) ────────────────────────────────────
+@st.cache_resource
+def lade_modell():
+    try:
+        modell = load_model(MODEL_PATH, compile=False)
+        return modell
+    except Exception as e:
+        st.error(f"Modell konnte nicht geladen werden:\n{e}")
+        st.stop()
 
 
-def bild_vorbereiten(pfad):
-    bild = Image.open(pfad).convert("RGB")
-    bild = ImageOps.fit(bild, BILD_GROESSE, Image.Resampling.LANCZOS)
+# ─── Bild vorbereiten (genau wie Teachable Machine) ───────────────
+def bild_vorbereiten(bild):
+    # Auf 224×224 bringen (Center Crop + Resize)
+    bild = ImageOps.fit(bild, IMG_SIZE, Image.Resampling.LANCZOS)
+    
+    # In Array umwandeln + Normalisieren [-1 .. +1]
     array = np.asarray(bild).astype("float32")
-    normalisiert = (array / 127.5) - 1
-    # Batch-Dimension → Form (1, 224, 224, 3)
+    normalisiert = (array / 127.5) - 1.0
+    
+    # Batch-Dimension hinzufügen
     return np.expand_dims(normalisiert, axis=0)
 
 
-def main():
-    if len(sys.argv) != 2:
-        print("\nVerwendung:")
-        print("   python classify_simple.py dein_bild.jpg\n")
-        sys.exit(1)
+# ─── Streamlit App ────────────────────────────────────────────────
+st.set_page_config(page_title="Kleidungs-Klassifizierer", layout="centered")
 
-    bild_pfad = sys.argv[1]
+st.title("🧥 Kleidungs-Klassifizierer")
+st.write("Lade ein Bild hoch (Pullover, Jacke, Hose oder Sonstiges)")
 
-    # Labels laden
-    klassen = lade_klassen()
-    print("Klassen:", ", ".join(klassen))
+# Labels & Modell einmal laden
+klassen = lade_labels()
+modell  = lade_modell()
 
-    # Modell laden
-    try:
-        modell = load_model(MODEL_DATEI, compile=False)
-    except Exception as e:
-        print("Fehler beim Laden des Modells:", e)
-        sys.exit(1)
+st.write("**Erwartete Klassen:**", ", ".join(klassen))
 
-    # Bild vorbereiten
-    try:
-        eingabe = bild_vorbereiten(bild_pfad)
-    except Exception as e:
-        print("Fehler beim Bild:", e)
-        sys.exit(1)
+# Bild-Upload
+hochgeladenes_bild = st.file_uploader("Bild auswählen (jpg, png, jpeg)", type=["jpg", "jpeg", "png"])
 
-    # Vorhersage
-    vorhersage = modell.predict(eingabe)[0]
-    index = np.argmax(vorhersage)
-    sicherheit = vorhersage[index]
+if hochgeladenes_bild is not None:
+    # Bild anzeigen
+    bild = Image.open(hochgeladenes_bild).convert("RGB")
+    st.image(bild, caption="Dein hochgeladenes Bild", use_column_width=True)
 
-    print("\n" + "-"*50)
-    print(f"Klasse:     {klassen[index]}")
-    print(f"Sicherheit: {sicherheit:.4f}  ({sicherheit*100:.1f} %)")
-    print("-"*50)
+    # Klassifizieren-Button
+    if st.button("Jetzt klassifizieren"):
+        with st.spinner("Analysiere Bild..."):
+            try:
+                eingabe = bild_vorbereiten(bild)
+                vorhersage = modell.predict(eingabe, verbose=0)[0]
 
+                index = np.argmax(vorhersage)
+                sicherheit = float(vorhersage[index]) * 100
 
-if __name__ == "__main__":
-    main()
+                st.success(f"**Ergebnis:** {klassen[index]}")
+                st.write(f"Sicherheit: **{sicherheit:.1f} %**")
+
+                # Alle Wahrscheinlichkeiten als Balken
+                st.subheader("Wahrscheinlichkeiten")
+                for i, (name, prob) in enumerate(zip(klassen, vorhersage)):
+                    prozent = float(prob) * 100
+                    st.progress(prozent / 100)
+                    st.write(f"{name}: {prozent:.1f} %")
+
+            except Exception as e:
+                st.error(f"Fehler bei der Vorhersage: {e}")
+
+# Hinweise unten
+st.markdown("---")
+st.caption("Modell: keras_Model.h5 | Labels: labels.txt | Auflösung: 224×224")
+st.caption("Funktioniert am besten mit gut beleuchteten, zentrierten Kleidungsfotos")
