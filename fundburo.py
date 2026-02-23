@@ -6,7 +6,7 @@ from tensorflow.keras.models import load_model
 import io
 
 # ─── Konfiguration ────────────────────────────────────────────────
-MODEL_PATH   = "keras_Model.h5"
+MODEL_PATH   = "keras_model.h5"
 LABELS_PATH  = "labels.txt"
 IMG_SIZE     = (224, 224)
 
