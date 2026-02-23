@@ -1,0 +1,4 @@
+0 hose
+1 pullover
+2 Jacken
+3 sonstiges
