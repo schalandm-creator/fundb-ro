@@ -2,3 +2,5 @@ tensorflow>=2.12.0
 numpy>=1.23
 pillow>=9.0
 tqdm>=4.64
+streamlit
+keras==2.12.0
