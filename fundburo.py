@@ -8,7 +8,7 @@ from tensorflow.keras.models import load_model
 import sys
 
 # ──── Einstellungen ────────────────────────────────────────
-MODEL_DATEI   = "keras_Model.h5"
+MODEL_DATEI   = "keras_model.h5"
 LABELS_DATEI  = "labels.txt"
 BILD_GROESSE  = (224, 224)
 
