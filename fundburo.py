@@ -1,19 +1,27 @@
-
 # app.py
 import streamlit as st
 from PIL import Image, ImageOps
 import numpy as np
-from tensorflow.keras.models import load_model
 from datetime import datetime
+
+# ─── TensorFlow / Keras ───────────────────────────────────────────
+import tensorflow as tf
+from tensorflow.keras.models import load_model
+from tensorflow.keras.layers import DepthwiseConv2D
+
+# Custom objects → um das 'groups':1 Problem zu umgehen
+custom_objects = {
+    'DepthwiseConv2D': lambda **kwargs: DepthwiseConv2D(**{k: v for k, v in kwargs.items() if k != 'groups'})
+}
 
 # ─── Supabase ─────────────────────────────────────────────────────
 from st_supabase_connection import SupabaseConnection
 
-# Connection herstellen (nutzt secrets.toml → [connections.supabase])
+# Connection (secrets.toml wird automatisch verwendet)
 conn = st.connection(
     name="supabase",
     type=SupabaseConnection,
-    ttl=None   # keine automatische Ablaufzeit des Caches
+    ttl=None
 )
 
 # ─── Konfiguration ────────────────────────────────────────────────
@@ -26,115 +34,106 @@ IMG_SIZE = (224, 224)
 def lade_labels():
     try:
         with open(LABELS_PATH, "r", encoding="utf-8") as f:
-            zeilen = f.readlines()
-        klassen = []
-        for zeile in zeilen:
-            zeile = zeile.strip()
-            if zeile and not zeile.startswith("#"):
-                if " " in zeile:
-                    klassen.append(zeile.split(" ", 1)[1].strip())
-                else:
-                    klassen.append(zeile)
+            lines = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+        klassen = [line.split(" ", 1)[1].strip() if " " in line else line for line in lines]
         return klassen
     except Exception as e:
-        st.error(f"labels.txt konnte nicht geladen werden: {e}")
-        return ["hose", "pullover", "Jacken", "sonstiges"]  # Fallback
+        st.error(f"labels.txt Fehler: {e}")
+        return ["hose", "pullover", "jacke", "sonstiges"]
 
 # ─── Modell laden ─────────────────────────────────────────────────
 @st.cache_resource
 def lade_modell():
     try:
-        return load_model(MODEL_PATH, compile=False)
+        # Wichtig: custom_objects + compile=False
+        model = load_model(
+            MODEL_PATH,
+            custom_objects=custom_objects,
+            compile=False,
+            safe_mode=False   # ← erlaubt das Laden trotz potenzieller Warnungen
+        )
+        return model
     except Exception as e:
-        st.error(f"Modell konnte nicht geladen werden:\n{e}")
+        st.error(f"Modell-Ladefehler:\n{str(e)}")
         st.stop()
 
-# ─── Bild vorbereiten ─────────────────────────────────────────────
+# ─── Bild vorbereiten (Teachable Machine kompatibel) ──────────────
 def bild_vorbereiten(bild):
     bild = ImageOps.fit(bild, IMG_SIZE, Image.Resampling.LANCZOS)
     array = np.asarray(bild).astype("float32")
     normalisiert = (array / 127.5) - 1.0
     return np.expand_dims(normalisiert, axis=0)
 
-# ─── In Supabase speichern ────────────────────────────────────────
+# ─── Ergebnis in Supabase speichern ───────────────────────────────
 def speichere_ergebnis(klasse, sicherheit, filename="unbekannt"):
     try:
         daten = {
             "timestamp": datetime.utcnow().isoformat(),
             "predicted_class": klasse,
             "confidence": round(float(sicherheit), 2),
-            "filename": filename,
+            "filename": filename
         }
-        response = conn.table("predictions").insert(daten).execute()
-        
-        if hasattr(response, "error") and response.error:
-            st.warning("Speichern fehlgeschlagen: " + str(response.error))
-        # else: stiller Erfolg → kann man später sichtbar machen
+        conn.table("predictions").insert(daten).execute()
     except Exception as e:
-        st.warning(f"Supabase Fehler beim Speichern: {e}")
+        st.warning(f"Supabase Speicherfehler: {str(e)}")
 
 # ─── Streamlit App ────────────────────────────────────────────────
 st.set_page_config(page_title="Kleidungs-Klassifizierer", layout="centered")
+
 st.title("🧥 Kleidungs-Klassifizierer")
-st.write("Lade ein Bild hoch (Pullover, Jacke, Hose oder Sonstiges)")
+st.write("Pullover · Jacke · Hose · Sonstiges")
 
 klassen = lade_labels()
-modell = lade_modell()
+modell  = lade_modell()
 
-st.write("**Erwartete Klassen:**", ", ".join(klassen))
+st.caption("Erkannte Klassen: " + ", ".join(klassen))
 
-hochgeladenes_bild = st.file_uploader("Bild auswählen (jpg, png, jpeg)", type=["jpg", "jpeg", "png"])
+uploaded_file = st.file_uploader("Bild hochladen", type=["jpg", "jpeg", "png"])
 
-if hochgeladenes_bild is not None:
-    bild = Image.open(hochgeladenes_bild).convert("RGB")
-    st.image(bild, caption="Dein hochgeladenes Bild", use_column_width=True)
+if uploaded_file is not None:
+    image = Image.open(uploaded_file).convert("RGB")
+    st.image(image, caption="Hochgeladenes Bild", use_column_width=True)
 
-    if st.button("Jetzt klassifizieren"):
-        with st.spinner("Analysiere Bild..."):
+    if st.button("Klassifizieren"):
+        with st.spinner("Analyse läuft …"):
             try:
-                eingabe = bild_vorbereiten(bild)
-                vorhersage = modell.predict(eingabe, verbose=0)[0]
-                index = np.argmax(vorhersage)
-                sicherheit = float(vorhersage[index]) * 100
+                input_array = bild_vorbereiten(image)
+                prediction = modell.predict(input_array, verbose=0)[0]
 
-                ergebnis = klassen[index]
-                st.success(f"**Ergebnis:** {ergebnis}")
-                st.write(f"Sicherheit: **{sicherheit:.1f} %**")
+                idx = np.argmax(prediction)
+                confidence = float(prediction[idx]) * 100
+                result_class = klassen[idx]
+
+                st.success(f"**{result_class}**")
+                st.write(f"Sicherheit: **{confidence:.1f} %**")
 
                 st.subheader("Wahrscheinlichkeiten")
-                for i, (name, prob) in enumerate(zip(klassen, vorhersage)):
-                    prozent = float(prob) * 100
-                    st.progress(prozent / 100)
-                    st.write(f"{name}: {prozent:.1f} %")
+                for name, prob in zip(klassen, prediction):
+                    p = float(prob) * 100
+                    st.progress(p / 100)
+                    st.write(f"{name}: {p:.1f} %")
 
-                # Ergebnis speichern
-                speichere_ergebnis(ergebnis, sicherheit, hochgeladenes_bild.name)
+                speichere_ergebnis(result_class, confidence, uploaded_file.name)
 
             except Exception as e:
-                st.error(f"Fehler bei der Vorhersage: {e}")
+                st.error(f"Fehler bei der Vorhersage: {str(e)}")
 
-# ─── Letzte Vorhersagen anzeigen (optional) ───────────────────────
-if st.button("Letzte 5 Vorhersagen aus Supabase anzeigen"):
+# ─── Debug / Übersicht ────────────────────────────────────────────
+if st.button("Letzte 5 Einträge aus Supabase"):
     try:
-        response = conn.table("predictions") \
-                       .select("*") \
-                       .order("timestamp", desc=True) \
-                       .limit(5) \
-                       .execute()
+        data = conn.table("predictions") \
+                   .select("*") \
+                   .order("timestamp", desc=True) \
+                   .limit(5) \
+                   .execute().data
 
-        if response.data:
-            st.subheader("Letzte Klassifikationen")
-            for row in response.data:
-                ts = row.get("timestamp", "–")
-                cls = row.get("predicted_class", "–")
-                conf = row.get("confidence", "–")
-                fn = row.get("filename", "–")
-                st.write(f"{ts} | **{cls}** | {conf}% | Datei: {fn}")
+        if data:
+            for row in data:
+                st.write(f"{row.get('timestamp','–')} | **{row.get('predicted_class','–')}** | {row.get('confidence','–')}% | {row.get('filename','–')}")
         else:
-            st.info("Noch keine Einträge vorhanden.")
+            st.info("Noch keine Einträge")
     except Exception as e:
-        st.error(f"Fehler beim Laden der Daten: {e}")
+        st.error(f"Datenbankfehler: {str(e)}")
 
 st.markdown("---")
-st.caption("Modell: keras_model.h5 | Labels: labels.txt | Supabase: predictions")
-st.caption("Funktioniert am besten mit zentrierten, gut beleuchteten Fotos")
+st.caption("Modell: keras_model.h5 | Supabase: predictions | 224×224")
