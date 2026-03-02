@@ -1,5 +1,5 @@
 streamlit>=1.38.0
-tensorflow==2.15.0
+tensorflow==2.15.0          # ← das ist der Sweet Spot: lädt fast alle TM-Modelle ohne Patch
 pillow>=10.0
 numpy>=1.26
 st-supabase-connection>=0.3.0
