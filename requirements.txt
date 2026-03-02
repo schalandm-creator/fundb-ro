@@ -1,6 +1,6 @@
-streamlit
-tensorflow
-pillow
-numpy
-st-supabase-connection
-supabase
+streamlit>=1.38.0
+tensorflow==2.15.0
+pillow>=10.0
+numpy>=1.26
+st-supabase-connection>=0.3.0
+supabase>=2.0.0
