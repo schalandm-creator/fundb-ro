@@ -1,13 +1,20 @@
 
+# app.py
 import streamlit as st
 from PIL import Image, ImageOps
 import numpy as np
 from tensorflow.keras.models import load_model
-import io
 from datetime import datetime
 
-# ─── Supabase Verbindung ─────────────────────────────────────────────
-conn = st.connection("supabase", type="supabase")   # Nutzt automatisch secrets.toml
+# ─── Supabase ─────────────────────────────────────────────────────
+from st_supabase_connection import SupabaseConnection
+
+# Connection herstellen (nutzt secrets.toml → [connections.supabase])
+conn = st.connection(
+    name="supabase",
+    type=SupabaseConnection,
+    ttl=None   # keine automatische Ablaufzeit des Caches
+)
 
 # ─── Konfiguration ────────────────────────────────────────────────
 MODEL_PATH = "keras_model.h5"
@@ -31,7 +38,7 @@ def lade_labels():
         return klassen
     except Exception as e:
         st.error(f"labels.txt konnte nicht geladen werden: {e}")
-        return ["hose", "pullover", "Jacken", "sonstiges"]
+        return ["hose", "pullover", "Jacken", "sonstiges"]  # Fallback
 
 # ─── Modell laden ─────────────────────────────────────────────────
 @st.cache_resource
@@ -57,18 +64,19 @@ def speichere_ergebnis(klasse, sicherheit, filename="unbekannt"):
             "predicted_class": klasse,
             "confidence": round(float(sicherheit), 2),
             "filename": filename,
-            # Optional: "user_id": st.session_state.user_id,  # falls du Login hast
         }
         response = conn.table("predictions").insert(daten).execute()
+        
         if hasattr(response, "error") and response.error:
-            st.warning("Konnte nicht in Supabase speichern: " + str(response.error))
+            st.warning("Speichern fehlgeschlagen: " + str(response.error))
+        # else: stiller Erfolg → kann man später sichtbar machen
     except Exception as e:
-        st.warning(f"Supabase Fehler: {e}")
+        st.warning(f"Supabase Fehler beim Speichern: {e}")
 
 # ─── Streamlit App ────────────────────────────────────────────────
 st.set_page_config(page_title="Kleidungs-Klassifizierer", layout="centered")
 st.title("🧥 Kleidungs-Klassifizierer")
-st.write("Lade ein Bild hoch → Klassifizieren → Ergebnis wird in Supabase gespeichert")
+st.write("Lade ein Bild hoch (Pullover, Jacke, Hose oder Sonstiges)")
 
 klassen = lade_labels()
 modell = lade_modell()
@@ -93,36 +101,40 @@ if hochgeladenes_bild is not None:
                 st.success(f"**Ergebnis:** {ergebnis}")
                 st.write(f"Sicherheit: **{sicherheit:.1f} %**")
 
-                # Alle Wahrscheinlichkeiten
                 st.subheader("Wahrscheinlichkeiten")
                 for i, (name, prob) in enumerate(zip(klassen, vorhersage)):
                     prozent = float(prob) * 100
                     st.progress(prozent / 100)
                     st.write(f"{name}: {prozent:.1f} %")
 
-                # ─── Ergebnis in Supabase speichern ───
+                # Ergebnis speichern
                 speichere_ergebnis(ergebnis, sicherheit, hochgeladenes_bild.name)
 
             except Exception as e:
-                st.error(f"Fehler: {e}")
+                st.error(f"Fehler bei der Vorhersage: {e}")
 
-# ─── Optional: Letzte Vorhersagen anzeigen ─────────────────────────
-if st.button("Letzte 5 Vorhersagen aus Supabase laden"):
+# ─── Letzte Vorhersagen anzeigen (optional) ───────────────────────
+if st.button("Letzte 5 Vorhersagen aus Supabase anzeigen"):
     try:
         response = conn.table("predictions") \
                        .select("*") \
                        .order("timestamp", desc=True) \
                        .limit(5) \
                        .execute()
-        
+
         if response.data:
             st.subheader("Letzte Klassifikationen")
             for row in response.data:
-                st.write(f"{row['timestamp']} | **{row['predicted_class']}** | {row['confidence']}% | Datei: {row['filename']}")
+                ts = row.get("timestamp", "–")
+                cls = row.get("predicted_class", "–")
+                conf = row.get("confidence", "–")
+                fn = row.get("filename", "–")
+                st.write(f"{ts} | **{cls}** | {conf}% | Datei: {fn}")
         else:
             st.info("Noch keine Einträge vorhanden.")
     except Exception as e:
-        st.error(f"Fehler beim Laden: {e}")
+        st.error(f"Fehler beim Laden der Daten: {e}")
 
 st.markdown("---")
-st.caption("Modell: keras_model.h5 | Supabase: predictions-Tabelle | 224×224")
+st.caption("Modell: keras_model.h5 | Labels: labels.txt | Supabase: predictions")
+st.caption("Funktioniert am besten mit zentrierten, gut beleuchteten Fotos")
