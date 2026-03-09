@@ -12,7 +12,7 @@ import uuid
 MODEL_PATH    = "keras_model.h5"           # muss im gleichen Ordner liegen
 LABELS_PATH   = "labels.txt"
 IMG_SIZE      = (224, 224)
-BUCKET_NAME   = "wardrobe"                 # dein Bucket-Name
+BUCKET_NAME   = "images"                 # dein Bucket-Name
 
 # Supabase via Streamlit Secrets (oder .env)
 SUPABASE_URL = "https://tqkxrvbkdywhfuogsysq.supabase.co"
