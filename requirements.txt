@@ -1,4 +1,16 @@
-streamlit
-tensorflow==2.15.0
-pillow
-numpy
+# Core Streamlit
+streamlit>=1.42.0
+
+# Machine Learning / Dein Modell
+tensorflow>=2.15.0,<2.16.0          # oder tensorflow-cpu==2.15.0 für leichtere Builds
+numpy>=1.26.0,<2.0.0
+
+# Bildverarbeitung
+pillow>=10.0.0
+
+# Supabase Integration
+supabase>=2.0.0                     # offizieller Python-Client
+python-dotenv>=1.0.0                # falls du .env nutzt (optional, aber empfohlen)
+
+# Falls du später mehr brauchst (optional)
+pandas>=2.0.0                       # für zukünftige Daten-Listen
