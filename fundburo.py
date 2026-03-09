@@ -1,194 +1,133 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Kleidungs-Klassifizierer (Hose / Pullover / Jacken / Sonstiges)
-+ Speichert das Bild in Supabase Storage
-"""
 
+import streamlit as st
+import numpy as np
+from PIL import Image, ImageOps
+from tensorflow.keras.models import load_model
+from supabase import create_client
 import os
-import sys
+import io
 import uuid
-from datetime import datetime
 
-# ── Supabase ────────────────────────────────────────────────
-try:
-    from supabase import create_client, Client
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    print("FEHLER: supabase oder python-dotenv nicht installiert.")
-    print("Bitte ausführen:  pip install supabase python-dotenv")
-    sys.exit(1)
-
-# ── core libs ───────────────────────────────────────────────
-try:
-    import numpy as np
-except ImportError:
-    print("FEHLER: numpy nicht installiert.")
-    sys.exit(1)
-
-try:
-    from PIL import Image, ImageOps
-except ImportError:
-    print("FEHLER: Pillow nicht installiert.")
-    sys.exit(1)
-
-try:
-    from tensorflow.keras.models import load_model
-except ImportError:
-    print("FEHLER: TensorFlow nicht installiert.")
-    sys.exit(1)
-
-# ────────────────────────────────────────────────
-#  Konfiguration
-# ────────────────────────────────────────────────
-
-MODEL_PATH    = "keras_Model.h5"
+# ── Konfiguration ────────────────────────────────────────────────
+MODEL_PATH    = "keras_Model.h5"           # muss im gleichen Ordner liegen
 LABELS_PATH   = "labels.txt"
 IMG_SIZE      = (224, 224)
+BUCKET_NAME   = "wardrobe"                 # dein Bucket-Name
 
-BUCKET_NAME   = "wardrobe"                  # ← deinen Bucket-Namen hier ändern
-USER_ID       = "dein-test-user-uuid"       # ← später aus Auth holen, z. B. supabase.auth.get_user()
+# Supabase via Streamlit Secrets (oder .env)
+supabase = create_client(
+    st.secrets["connections"]["supabase"]["SUPABASE_URL"],
+    st.secrets["connections"]["supabase"]["SUPABASE_KEY"]
+)
 
-SUPABASE_URL  = https://tqkxrvbkdywhfuogsysq.supabase.co
-SUPABASE_KEY  = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRxa3hydmJrZHl3aGZ1b2dzeXNxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI0NTc4MTMsImV4cCI6MjA4ODAzMzgxM30.7C6QoI3yn_97HHTMBN2_DT8QZ8I-QzPbVkC3R23eW8U
-
-if not SUPABASE_URL or not SUPABASE_KEY:
-    print("FEHLER: SUPABASE_URL oder SUPABASE_ANON_KEY in .env fehlt!")
-    sys.exit(1)
-
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-# ────────────────────────────────────────────────
-
-def load_labels(path: str) -> list[str]:
-    if not os.path.isfile(path):
-        print(f"FEHLER: {path} nicht gefunden!")
-        sys.exit(1)
+# ── Cache: Modell + Labels nur einmal laden ─────────────────────
+@st.cache_resource
+def load_everything():
+    # Labels laden
+    if not os.path.isfile(LABELS_PATH):
+        st.error(f"labels.txt nicht gefunden!")
+        st.stop()
     
-    with open(path, "r", encoding="utf-8") as f:
+    with open(LABELS_PATH, "r", encoding="utf-8") as f:
         lines = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+    class_names = [line.split(maxsplit=1)[1].strip() if len(line.split(maxsplit=1)) == 2 else line for line in lines]
     
-    class_names = []
-    for line in lines:
-        parts = line.split(maxsplit=1)
-        if len(parts) == 2:
-            class_names.append(parts[1].strip())
-        else:
-            class_names.append(line)
-    return class_names
-
-
-def prepare_image(image_path: str) -> np.ndarray:
-    if not os.path.isfile(image_path):
-        print(f"FEHLER: Bild nicht gefunden → {image_path}")
-        sys.exit(1)
+    # Modell laden
+    if not os.path.isfile(MODEL_PATH):
+        st.error(f"Modell nicht gefunden: {MODEL_PATH}")
+        st.stop()
     
+    model = load_model(MODEL_PATH, compile=False)
+    return class_names, model
+
+class_names, model = load_everything()
+
+# ── Bild vorbereiten ─────────────────────────────────────────────
+def prepare_image(image_bytes):
     try:
-        image = Image.open(image_path).convert("RGB")
-        
-        try:
-            resample_filter = Image.Resampling.LANCZOS
-        except AttributeError:
-            resample_filter = Image.LANCZOS
-            
-        image = ImageOps.fit(image, IMG_SIZE, resample_filter)
-        
+        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        image = ImageOps.fit(image, IMG_SIZE, Image.Resampling.LANCZOS if hasattr(Image, 'Resampling') else Image.LANCZOS)
         image_array = np.asarray(image, dtype=np.float32)
         normalized = (image_array / 127.5) - 1.0
         return np.expand_dims(normalized, axis=0)
-    
     except Exception as e:
-        print(f"FEHLER beim Verarbeiten des Bildes: {e}")
-        sys.exit(1)
+        st.error(f"Fehler beim Verarbeiten des Bildes: {e}")
+        return None
 
-
-def upload_to_supabase(image_path: str) -> tuple[str, str | None]:
-    """Lädt das Bild hoch und gibt (storage_path, public_url) zurück"""
-    file_ext = os.path.splitext(image_path)[1].lower()  # .jpg, .png, ...
-    unique_filename = f"{uuid.uuid4()}{file_ext}"
-    
-    # Ordner pro User → verhindert Namenskonflikte & organisiert
-    storage_path = f"{USER_ID}/{unique_filename}"
+# ── Upload zu Supabase Storage ──────────────────────────────────
+def upload_to_supabase(image_bytes, filename):
+    file_ext = os.path.splitext(filename)[1].lower() or ".jpg"
+    unique_name = f"{uuid.uuid4()}{file_ext}"
+    # Hier ohne User-Ordner – für echten User: f"user_{user_id}/{unique_name}"
+    path = unique_name
     
     try:
-        with open(image_path, "rb") as f:
-            res = supabase.storage.from_(BUCKET_NAME).upload(
-                path=storage_path,
-                file=f,
-                file_options={"content-type": f"image/{file_ext.lstrip('.') or 'jpeg'}"}
-            )
-        
-        if hasattr(res, "error") and res.error:
-            raise Exception(f"Upload-Fehler: {res.error.message}")
-        
-        # Öffentliche URL (nur wenn Bucket public ist!)
-        public_url = supabase.storage.from_(BUCKET_NAME).get_public_url(storage_path)
-        
-        return storage_path, public_url
-    
+        supabase.storage.from_(BUCKET_NAME).upload(
+            path=path,
+            file=image_bytes,
+            file_options={"content-type": f"image/{file_ext.lstrip('.') or 'jpeg'}"}
+        )
+        public_url = supabase.storage.from_(BUCKET_NAME).get_public_url(path)
+        return path, public_url
     except Exception as e:
-        print(f"Supabase Upload fehlgeschlagen: {e}")
-        return storage_path, None
+        st.warning(f"Upload nach Supabase fehlgeschlagen: {e}")
+        return None, None
 
+# ── Streamlit UI ─────────────────────────────────────────────────
+st.title("Kleidungs-Klassifizierer 🧥👕")
+st.write("Lade ein Bild hoch (Hose, Pullover, Jacke, Sonstiges) – KI sagt dir, was es ist!")
 
-def main():
-    if len(sys.argv) != 2:
-        prog = os.path.basename(sys.argv[0])
-        print("\nVerwendung:")
-        print(f"  python {prog} dein_bild.jpg")
-        print(f"  python {prog} pfad/zum/bild.png\n")
-        sys.exit(1)
+uploaded_file = st.file_uploader("Wähle ein Bild...", type=["jpg", "jpeg", "png"])
 
-    image_path = sys.argv[1]
+if uploaded_file is not None:
+    # Bild anzeigen
+    image_bytes = uploaded_file.read()
+    uploaded_file.seek(0)  # zurücksetzen für weitere Nutzung
+    st.image(image_bytes, caption="Dein hochgeladenes Bild", use_container_width=True)
 
-    class_names = load_labels(LABELS_PATH)
-    print(f"Klassen: {', '.join(class_names)}")
+    with st.spinner("Analysiere Bild..."):
+        data = prepare_image(image_bytes)
+        if data is not None:
+            prediction = model.predict(data, verbose=0)[0]
+            idx = np.argmax(prediction)
+            confidence = float(prediction[idx])
+            category = class_names[idx]
 
-    if not os.path.isfile(MODEL_PATH):
-        print(f"FEHLER: Modell-Datei nicht gefunden → {MODEL_PATH}")
-        sys.exit(1)
+            # Ergebnis anzeigen
+            st.subheader("Ergebnis")
+            st.success(f"**{category.upper()}**  (Sicherheit: {confidence:.1%})")
 
-    print("Lade Modell... ", end="", flush=True)
-    model = load_model(MODEL_PATH, compile=False)
-    print("fertig")
+            st.markdown("**Alle Wahrscheinlichkeiten:**")
+            for name, prob in zip(class_names, prediction):
+                st.write(f"{name:12}: {float(prob):6.1%}")
 
-    print("Verarbeite Bild... ", end="", flush=True)
-    data = prepare_image(image_path)
-    print("fertig")
+            # ── Optional: Speichern in Supabase ──────────────────────
+            if st.button("Bild + Ergebnis in Supabase speichern"):
+                with st.spinner("Speichere..."):
+                    storage_path, public_url = upload_to_supabase(image_bytes, uploaded_file.name)
+                    
+                    if storage_path:
+                        # User-ID: Für Demo hartcodiert – später via Auth
+                        user_id = "deine-test-user-uuid-hier"   # ← ändern!
 
-    print("Berechne Vorhersage... ", end="", flush=True)
-    prediction = model.predict(data, verbose=0)[0]
-    print("fertig")
+                        data_to_insert = {
+                            "user_id": user_id,
+                            "storage_path": storage_path,
+                            "predicted_category": category,
+                            "confidence": confidence
+                        }
+                        try:
+                            res = supabase.table("wardrobe_items").insert(data_to_insert).execute()
+                            st.success(f"Gespeichert! (ID: {res.data[0]['id']})")
+                            if public_url:
+                                st.markdown(f"**Öffentliche URL:** {public_url}")
+                        except Exception as e:
+                            st.error(f"DB-Fehler: {e}")
+                    else:
+                        st.warning("Speichern abgebrochen (Upload fehlgeschlagen)")
+else:
+    st.info("Lade ein Bild hoch, um zu starten.")
 
-    idx = np.argmax(prediction)
-    confidence = float(prediction[idx])
-
-    # ── Ergebnis ───────────────────────────────────────────
-    print("\n" + "═" * 60)
-    print("  ERGEBNIS")
-    print("═" * 60)
-    print(f"  Klasse       :  {class_names[idx]:<12}")
-    print(f"  Sicherheit   :  {confidence:>7.2%}")
-    print("═" * 60)
-
-    print("\nAlle Wahrscheinlichkeiten:")
-    for i, (name, prob) in enumerate(zip(class_names, prediction)):
-        print(f"  {name:12} : {float(prob):6.2%}")
-
-    # ── NEU: Bild hochladen ────────────────────────────────
-    print("\nSpeichere Bild in Supabase Storage ... ", end="", flush=True)
-    storage_path, public_url = upload_to_supabase(image_path)
-    print("fertig")
-
-    print(f"  → Storage-Pfad : {storage_path}")
-    if public_url:
-        print(f"  → Öffentliche URL: {public_url}")
-    else:
-        print("  → Bucket ist nicht public → signed URL nötig (später erweiterbar)")
-
-    print()
-
-
-if __name__ == "__main__":
-    main()
+# Footer
+st.markdown("---")
+st.caption("Basierend auf deinem Teachable-Machine-Modell • Streamlit + Supabase • 2026")
