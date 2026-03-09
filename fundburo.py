@@ -9,16 +9,16 @@ import io
 import uuid
 
 # ── Konfiguration ────────────────────────────────────────────────
-MODEL_PATH    = "keras_Model.h5"           # muss im gleichen Ordner liegen
+MODEL_PATH    = "keras_model.h5"           # muss im gleichen Ordner liegen
 LABELS_PATH   = "labels.txt"
 IMG_SIZE      = (224, 224)
 BUCKET_NAME   = "wardrobe"                 # dein Bucket-Name
 
 # Supabase via Streamlit Secrets (oder .env)
-supabase = create_client(
-    st.secrets["connections"]["supabase"]["SUPABASE_URL"],
-    st.secrets["connections"]["supabase"]["SUPABASE_KEY"]
-)
+SUPABASE_URL = "https://tqkxrvbkdywhfuogsysq.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRxa3hydmJrZHl3aGZ1b2dzeXNxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI0NTc4MTMsImV4cCI6MjA4ODAzMzgxM30.7C6QoI3yn_97HHTMBN2_DT8QZ8I-QzPbVkC3R23eW8U" 
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
 
 # ── Cache: Modell + Labels nur einmal laden ─────────────────────
 @st.cache_resource
